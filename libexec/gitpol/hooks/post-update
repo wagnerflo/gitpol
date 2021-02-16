@@ -1,0 +1,11 @@
+#!/bin/sh
+gitpol=$(
+    which git-pol 2>/dev/null || \
+    printf "$(dirname "$(dirname "$(dirname "$0")")")"/git-core/git-pol
+)
+if [ -f "${gitpol}" -a -x "${gitpol}" ]; then
+    exec ${gitpol} runhook "$(basename "$0")" "$@"
+else
+    printf 'git-pol command not found' >/dev/stderr
+    exit 1
+fi

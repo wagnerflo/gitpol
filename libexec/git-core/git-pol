@@ -1,0 +1,148 @@
+#!/usr/bin/env modernish
+#!use safe
+#!use sys/base/mktemp
+#!use sys/base/tac
+#!use sys/cmd/harden
+#!use sys/cmd/procsubst
+#!use var/genoptparser
+#!use var/loop
+
+harden git
+harden -e '>1' -f gitconf git config
+harden -e '!=0 && !=128' -f gitcat git cat-file
+
+if str eq ${ME#${MSH_PREFIX}} ${ME}; then
+    PREFIX="$(dirname "$(dirname "$(dirname "${ME}")")")"
+else
+    PREFIX=${MSH_PREFIX}
+fi
+
+LIBEXEC=${PREFIX}/libexec/gitpol
+HOOKS_PATH=${LIBEXEC}/hooks
+POLICY_PATH=${LIBEXEC}/policies
+
+showusage () {
+    putln "usage: $(basename ${ME}) { init, runhook }"
+}
+
+generateoptionparser -f octdump -n 0 octdump_parse
+
+octdump () {
+    eval "${octdump_parse}"
+    od -An -vto1 | tr -d '\n' | sed -e 's/ *$//' -e 's/  */\\/g' \
+        $(isset opt_0 && put -e 's/\\000/ /g')
+}
+
+get_policyPath() {
+    gitconf $1 --get-all --type path --null gitpol.policyPath | \
+        octdump -0 | tac -r -s ' '
+}
+
+gitconf_is_true () {
+    str eq $(gitconf --get --bool "$@") true
+}
+
+runpolicy () {
+    hook=$1
+    ref=$2
+    shift 2
+
+    searchpath=$(
+        get_policyPath --local; putln
+        get_policyPath --global; putln
+        if gitconf_is_true --default true gitpol.allowUserPolicies; then
+            put "${HOME}/.gitpol.d" | octdump; putln
+        fi
+        get_policyPath --system; putln
+        put "${POLICY_PATH}" | octdump; putln
+    )
+
+    if gitconf_is_true --default true gitpol.allowRepoPolicies && \
+       gitcat tree ${ref}:.gitpol.d >/dev/null 2>&1; then
+        allowRepoPolicies=true
+    fi
+
+    while IFS=' ' read -r policy args; do
+        policy_object=${ref}:.gitpol.d/${policy}
+        file=
+
+        if isset -v allowRepoPolicies && \
+           gitcat blob ${policy_object} >/dev/null 2>&1; then
+            file=$(% gitcat blob ${policy_object}2:.gitpol.d/${policy})
+            chmod +x ${file}
+        else
+            LOOP for --split path in ${searchpath}; DO
+                policy_object=$(printf $path)/${policy}
+                if can exec ${policy_object}; then
+                    file=${policy_object}
+                    break
+                fi
+            DONE
+        fi
+
+        if str empty ${file}; then
+            exit 1 "couldn't find script that implements policy '${policy}'"
+        else
+            ${file} ${hook} "$@" || \
+                exit $? "${hook} denied by policy '${policy_object}'"
+        fi
+    done < $(% gitcat blob ${ref}:.gitpol 2>/dev/null)
+}
+
+cmd=${1:-}
+shift
+
+case ${cmd} in
+    init)
+        if str eq ${1:-} -f; then
+            gitconf --local core.hooksPath ${HOOKS_PATH}
+            exit 0
+        fi
+
+        case $(gitconf --local core.hooksPath) in
+            ${HOOKS_PATH})
+                exit 0
+                ;;
+            "")
+                gitconf core.hooksPath ${HOOKS_PATH}
+                ;;
+            *)
+                exit 1 "core.hooksPath is already set;" \
+                     "use -f to force overwriting it"
+                ;;
+        esac
+    ;;
+
+    runhook)
+        hook=$1
+        shift
+        local_hook=${GIT_DIR:-$(pwd)/.git}/hooks/${hook}
+
+        case ${hook} in
+            pre-receive|post-receive)
+                mktemp -sCCC
+                refs=${REPLY}
+                cat >> ${refs}
+
+                while IFS=' ' read oldref newref refname; do
+                    put ${oldref} ${newref} ${refname} | \
+                        runpolicy ${hook} ${oldref} || exit $?
+                done < ${refs}
+
+                if can exec ${local_hook}; then
+                    ${local_hook} "$@" < ${refs} || \
+                        exit $? "$1 denied by local repository hook"
+                fi
+                ;;
+            *)
+                runpolicy ${hook} HEAD "$@" || exit $?
+                if can exec ${local_hook}; then
+                    ${local_hook} "$@" || \
+                        exit $? "$1 denied by local repository hook"
+                fi
+                ;;
+        esac
+    ;;
+
+    *) exit -u 22 ;;
+esac

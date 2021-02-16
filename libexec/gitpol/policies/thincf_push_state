@@ -1,0 +1,31 @@
+#!/usr/bin/env modernish
+#!use safe
+
+hook=${1:-}
+shift
+
+load_config () {
+    for cfg in url cert key cacert; do
+        eval ${cfg}=\$\(git config --get --type path gitpol.thincf_push_state.${cfg}\)
+        so || exit 1 "configuration missing gitpol.thincf_push_state.${cfg}"
+    done
+}
+
+case "${hook}" in
+    pre-receive)
+        load_config || exit $?
+        ;;
+
+    post-update)
+        load_config || exit $?
+        default_branch=$(git symbolic-ref HEAD)
+
+        for ref in "$@"; do
+            str eq "${ref}" "${default_branch}" || continue
+            git archive --format tar.gz "${ref}" | \
+                curl -X POST --data-binary @- -s \
+                     --cacert "${cacert}" --cert "${cert}" --key "${key}" \
+                     "${url}"
+        done
+        ;;
+esac
