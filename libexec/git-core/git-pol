@@ -134,6 +134,21 @@ case ${cmd} in
                         exit $? "$1 denied by local repository hook"
                 fi
                 ;;
+            update)
+                runpolicy ${hook} $2 "$@" || exit $?
+                if can exec ${local_hook}; then
+                    ${local_hook} "$@" || \
+                        exit $? "$1 denied by local repository hook"
+                fi
+                ;;
+            post-update)
+                for refname in "$@"; do
+                    runpolicy ${hook} ${refname} ${refname}
+                done
+                if can exec ${local_hook}; then
+                    ${local_hook} "$@"
+                fi
+                ;;
             *)
                 runpolicy ${hook} HEAD "$@" || exit $?
                 if can exec ${local_hook}; then
