@@ -62,6 +62,11 @@ runpolicy () {
         allowRepoPolicies=true
     fi
 
+    mktemp -sCCC
+    policies=${REPLY}
+    gitcat blob ${ref}:.gitpol 2>/dev/null >> ${policies}
+    gitconf --get-all gitpol.defaultPolicy >> ${policies}
+
     while IFS=' ' read -r policy args; do
         policy_object=${ref}:.gitpol.d/${policy}
         file=
@@ -86,7 +91,7 @@ runpolicy () {
             ${file} ${hook} "$@" || \
                 exit $? "${hook} denied by policy '${policy_object}'"
         fi
-    done < $(% gitcat blob ${ref}:.gitpol 2>/dev/null)
+    done < ${policies}
 }
 
 cmd=${1:-}
